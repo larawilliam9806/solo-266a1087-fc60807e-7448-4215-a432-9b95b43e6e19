@@ -10,14 +10,20 @@ from fastapi import FastAPI, HTTPException, Query
 from typing_extensions import Annotated
 
 from . import db
+from .coverage import analyze_coverage
 from .models import (
     MAX_COORD,
+    CoverageOut,
     GradeOut,
+    RegionIntervalOut,
     RuleIn,
+    ShadowedRuleOut,
     SwapIn,
     TableIn,
     TableOut,
+    UncoveredRegionOut,
     VersionOut,
+    WitnessOut,
 )
 from .verify import Interval, Rule
 
@@ -129,6 +135,43 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 detail={"error": "no_such_version", "message": f"版本 {version} 不存在"},
             )
         return TableOut(version=version, rules=_to_api(rules))
+
+    @app.get(
+        "/tables/{version}/coverage",
+        response_model=CoverageOut,
+        tags=["分级表"],
+        summary="按版号核查规则覆盖：未分级区域 + 被遮蔽规则",
+    )
+    def coverage_by_version(version: int) -> CoverageOut:
+        conn = db.connect(path)
+        try:
+            rules = db.fetch_version(conn, version)
+        finally:
+            conn.close()
+        if rules is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "no_such_version", "message": f"版本 {version} 不存在"},
+            )
+        report = analyze_coverage(rules)
+        return CoverageOut(
+            version=version,
+            uncovered=[
+                UncoveredRegionOut(
+                    thickness=RegionIntervalOut(min=r.t_lo, max=r.t_hi),
+                    strength=RegionIntervalOut(min=r.s_lo, max=r.s_hi),
+                )
+                for r in report.uncovered
+            ],
+            shadowed_rules=[
+                ShadowedRuleOut(
+                    ordinal=s.ordinal,
+                    shadowed_by=s.shadowed_by,
+                    witness=WitnessOut(thickness=s.thickness, strength=s.strength),
+                )
+                for s in report.shadowed_rules
+            ],
+        )
 
     @app.post(
         "/tables/swap",

@@ -39,6 +39,22 @@ FastAPI 提供分级 API，SQLite 存储版本化分级表，支持 Docker Compo
 - **发布时所见版号仍有效才能换表**（乐观并发控制，失效返回 409）；
 - 核对不通过或任何失败都会回滚，**继续沿用已生效的表**。
 
+## 覆盖核查
+
+`GET /tables/{version}/coverage` 按版号分析规则覆盖情况，供质检员定位：
+
+- **哪些读数会落到未分级**：`uncovered` 列出非负整数测值范围内所有未覆盖区域，
+  用**互不重叠的矩形**表示；`max: null` 表示该方向无上限（延伸到 +∞）。
+  相邻、重叠的规则边界都按切分点对齐算全，不逐点枚举。
+- **哪些规则永远轮不到**：`shadowed_rules` 列出被前序规则完全遮蔽的规则序号
+  （`ordinal`，从 0 起，与 rules 数组下标一致），并各给一组被前序规则先命中的
+  代表读数（`witness`）及该处首条命中的前序规则序号（`shadowed_by`）。
+
+算法与换版核对同源（`app/coverage.py` 复用 `verify.py` 的平面划分）：把该版所有
+规则区间端点投影到两个坐标轴作切分，平面被划成有限个格子，每格的首条命中规则
+恒定；未覆盖格子按"相邻厚度行上相同的强度段"纵向合并成矩形。格子数量只取决于
+端点个数，与区间宽度无关。
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
@@ -46,6 +62,7 @@ FastAPI 提供分级 API，SQLite 存储版本化分级表，支持 Docker Compo
 | `POST` | `/tables` | 登记首版分级表（仅一次，重复返回 409） |
 | `GET` | `/tables/current` | 查看现行分级表（含版号） |
 | `GET` | `/tables/{version}` | 查看历史版本 |
+| `GET` | `/tables/{version}/coverage` | 按版号核查覆盖：未分级区域 + 被遮蔽规则 |
 | `POST` | `/tables/swap` | 换版（核对通过且版号有效才发布） |
 | `GET` | `/grade?thickness=&strength=` | 分级查询，返回所用版号和等级 |
 
@@ -78,6 +95,13 @@ curl -X POST localhost:8000/tables/swap -H 'Content-Type: application/json' -d '
   "allowed_strength": {"min": 0, "max": 5000}
 }'
 # → {"version": 2}
+
+# 覆盖核查：未分级区域 + 被遮蔽规则
+curl localhost:8000/tables/2/coverage
+# → {"version":2,
+#    "uncovered":[{"thickness":{"min":0,"max":200},"strength":{"min":5001,"max":null}},
+#                 {"thickness":{"min":201,"max":null},"strength":{"min":0,"max":null}}],
+#    "shadowed_rules":[]}
 ```
 
 ### 错误响应
@@ -121,19 +145,23 @@ python -m pytest tests/ -q
 
 测试覆盖：符号化核对算法（含与逐点暴力枚举对照的随机模糊测试、10^15 量级
 坐标的无枚举核对）、首版登记、分级查询（首条命中 / 未分级 / 版号返回）、
-换版全流程（成功、版号冲突、核对失败回滚、宽许可区间）。
+换版全流程（成功、版号冲突、核对失败回滚、宽许可区间）、规则覆盖分析
+（未覆盖矩形合并、相邻/重叠边界、无界区域、遮蔽规则与代表读数、
+与暴力枚举对照的随机模糊测试、换版失败后仍读已生效版本）。
 
 ## 项目结构
 
 ```
 app/
-  main.py    # FastAPI 入口与路由
-  models.py  # 请求/响应模型（Pydantic 校验）
-  db.py      # SQLite 持久化与换版事务
-  verify.py  # 换版符号化核对（核心算法）
+  main.py      # FastAPI 入口与路由
+  models.py    # 请求/响应模型（Pydantic 校验）
+  db.py        # SQLite 持久化与换版事务
+  verify.py    # 换版符号化核对（核心算法）
+  coverage.py  # 规则覆盖分析：未分级区域 + 遮蔽规则
 tests/
-  test_verify.py  # 核对算法单测 + 暴力枚举对照
-  test_api.py     # API 端到端测试
+  test_verify.py    # 核对算法单测 + 暴力枚举对照
+  test_api.py       # API 端到端测试
+  test_coverage.py  # 覆盖分析单测 + 暴力枚举对照 + API 测试
 Dockerfile
 docker-compose.yml
 ```
