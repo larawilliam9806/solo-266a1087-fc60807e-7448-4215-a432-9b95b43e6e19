@@ -1,0 +1,24 @@
+services:
+  grading:
+    build: .
+    image: ceramic-grading
+    ports:
+      - "8000:8000"
+    environment:
+      GRADING_DB_PATH: /data/grading.db
+    volumes:
+      - grading-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  grading-data:
